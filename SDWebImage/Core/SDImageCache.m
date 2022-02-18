@@ -552,17 +552,16 @@ static NSString * _defaultDiskCacheDirectory;
     // 2. in-memory cache miss & diskDataSync
     BOOL shouldQueryDiskSync = ((image && options & SDImageCacheQueryMemoryDataSync) ||
                                 (!image && options & SDImageCacheQueryDiskDataSync));
-    void(^queryDiskBlock)(void) =  ^{
-        if (operation.isCancelled) {
-            if (doneBlock) {
-                doneBlock(nil, nil, SDImageCacheTypeNone);
-            }
-            return;
+    if (operation.isCancelled) {
+        if (doneBlock) {
+            doneBlock(nil, nil, SDImageCacheTypeNone);
         }
-        
-        @autoreleasepool {
-            NSData *diskData = [self diskImageDataBySearchingAllPathsForKey:key];
-            UIImage *diskImage;
+        return operation;
+    }
+    @autoreleasepool {
+        __block NSData *diskData = [self diskImageDataBySearchingAllPathsForKey:key];
+        __block UIImage *diskImage;
+        void(^queryDiskBlock)(void) =  ^{
             if (image) {
                 // the image is from in-memory cache, but need image data
                 diskImage = image;
@@ -579,24 +578,22 @@ static NSString * _defaultDiskCacheDirectory;
                     [self.memoryCache setObject:diskImage forKey:key cost:cost];
                 }
             }
-            
-            if (doneBlock) {
-                if (shouldQueryDiskSync) {
+        };
+        
+        // Query in ioQueue to keep IO-safe
+        if (shouldQueryDiskSync) {
+            dispatch_sync(self.ioQueue, ^{
+                queryDiskBlock();
+            });
+            doneBlock(diskImage, diskData, SDImageCacheTypeDisk);
+        } else {
+            dispatch_async(self.ioQueue, ^{
+                queryDiskBlock();
+                dispatch_async(dispatch_get_main_queue(), ^{
                     doneBlock(diskImage, diskData, SDImageCacheTypeDisk);
-                } else {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        doneBlock(diskImage, diskData, SDImageCacheTypeDisk);
-                    });
-                }
-            }
+                });
+            });
         }
-    };
-    
-    // Query in ioQueue to keep IO-safe
-    if (shouldQueryDiskSync) {
-        dispatch_sync(self.ioQueue, queryDiskBlock);
-    } else {
-        dispatch_async(self.ioQueue, queryDiskBlock);
     }
     
     return operation;
